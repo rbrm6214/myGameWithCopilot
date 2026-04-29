@@ -7,16 +7,25 @@ const TOTAL_SNAKES = 10;
 const ORANGE_COUNT = 100;
 const INITIAL_SCORE = 3;
 const SNAKE_SPEED = 165;
-const SEGMENT_SPACING = 13;
+const DEFAULT_SEGMENT_SPACING = 3;
 const HEAD_RADIUS = 10;
 const CAMERA_ZOOM = 1.1;
 const HIGHSCORE_LIMIT = 10;
 const HIGHSCORE_KEY = 'basilics-highscores';
 const HEAD_TO_HEAD_DISTANCE = (HEAD_RADIUS * 2) - 2;
-const HEAD_TO_BODY_DISTANCE = (HEAD_RADIUS * 2) - 4;
+const HEAD_TO_BODY_DISTANCE = (HEAD_RADIUS * 2) - 2;
 const POPUP_LIFETIME_MS = 520;
 const MAJOR_SHAKE_DURATION_MS = 130;
 const MAJOR_SHAKE_INTENSITY = 0.006;
+const DEFAULT_BOT_LEVEL = 4;
+const BOT_VISION_UNIT = 200;
+const HUD_EMIT_INTERVAL_MS = 80;
+const BOT_LOOK_AHEAD = 110;
+const BOT_TRAP_STEP = 80;
+const DEFAULT_BOT_DANGER_THRESHOLD = 640;
+const BOT_DANGER_THRESHOLD_MIN = 300;
+const BOT_DANGER_THRESHOLD_MAX = 1100;
+const DEFAULT_BOT_AGGRESSIVITY_ACTIVE_LEVEL = 6;
 
 const SNAKE_COLORS = [
     0x39ff14,
@@ -55,6 +64,27 @@ export class Game extends Scene
         this.isGameOver = false;
         this.localPlayer = null;
         this.botTurnDelayMs = 250;
+        this.setup = null;
+        this.playerName = 'Joueur';
+        this.elapsedTimeMs = 0;
+        this.hudEmitTimer = 0;
+        this.segmentSpacing = DEFAULT_SEGMENT_SPACING;
+        this.botDangerThreshold = DEFAULT_BOT_DANGER_THRESHOLD;
+        this.botAggressivityActiveLevel = DEFAULT_BOT_AGGRESSIVITY_ACTIVE_LEVEL;
+    }
+
+    init (data)
+    {
+        this.setup = (data && data.localSetup) ? data.localSetup : null;
+        this.segmentSpacing = Number.isFinite(this.setup?.espacement)
+            ? Math.max(1, Math.floor(this.setup.espacement))
+            : DEFAULT_SEGMENT_SPACING;
+        this.botDangerThreshold = Number.isFinite(this.setup?.seuilDanger)
+            ? PhaserMath.Clamp(Math.floor(this.setup.seuilDanger), BOT_DANGER_THRESHOLD_MIN, BOT_DANGER_THRESHOLD_MAX)
+            : DEFAULT_BOT_DANGER_THRESHOLD;
+        this.botAggressivityActiveLevel = Number.isFinite(this.setup?.['agressivité_active_niveau'])
+            ? PhaserMath.Clamp(Math.floor(this.setup['agressivité_active_niveau']), 1, 11)
+            : DEFAULT_BOT_AGGRESSIVITY_ACTIVE_LEVEL;
     }
 
     create ()
@@ -62,6 +92,8 @@ export class Game extends Scene
         this.isGameOver = false;
         this.snakes = [];
         this.oranges = [];
+        this.elapsedTimeMs = 0;
+        this.hudEmitTimer = 0;
 
         this.cameras.main.setBackgroundColor(0x102030);
         this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
@@ -74,11 +106,24 @@ export class Game extends Scene
 
         const spawnPoints = this.createUniformSpawnPoints(TOTAL_SNAKES);
 
+        const playerSnakeIndex = this.setup ? this.setup.playerSnakeIndex : 0;
+        this.playerName = (this.setup && this.setup.playerName) ? this.setup.playerName : 'Joueur';
+
+        const botLevelMap = {};
+        if (this.setup)
+        {
+            for (const entry of this.setup.botLevels)
+            {
+                botLevelMap[entry.snakeIndex] = entry.level;
+            }
+        }
+
         for (let index = 0; index < TOTAL_SNAKES; index++)
         {
-            const isPlayer = index === 0;
+            const isPlayer = index === playerSnakeIndex;
             const color = SNAKE_COLORS[index % SNAKE_COLORS.length];
-            const snake = this.createSnake(`snake-${index + 1}`, spawnPoints[index], color, isPlayer);
+            const botLevel = isPlayer ? null : (botLevelMap[index] !== undefined ? botLevelMap[index] : DEFAULT_BOT_LEVEL);
+            const snake = this.createSnake(`snake-${index + 1}`, spawnPoints[index], color, isPlayer, botLevel);
             this.snakes.push(snake);
 
             if (isPlayer)
@@ -92,14 +137,6 @@ export class Game extends Scene
         this.restartKey = this.input.keyboard.addKey('R');
 
         this.cameras.main.startFollow(this.localPlayer.head, true, 1, 1);
-
-        this.hudText = this.add.text(16, 16, '', {
-            fontFamily: 'Arial',
-            fontSize: 20,
-            color: '#ffffff',
-            stroke: '#000000',
-            strokeThickness: 4
-        }).setScrollFactor(0).setDepth(1000);
 
         this.endPanel = this.add.rectangle(
             this.scale.width / 2,
@@ -119,6 +156,8 @@ export class Game extends Scene
 
         this.scale.on('resize', this.handleResize, this);
 
+        this.emitHudUpdate();
+
         EventBus.emit('current-scene-ready', this);
     }
 
@@ -128,11 +167,13 @@ export class Game extends Scene
         {
             if (Input.Keyboard.JustDown(this.restartKey))
             {
-                this.scene.restart();
+                this.scene.start('LocalSetup');
             }
 
             return;
         }
+
+        this.elapsedTimeMs += delta;
 
         const dt = delta / 1000;
 
@@ -169,10 +210,10 @@ export class Game extends Scene
             this.updateSnakeScoreLabel(snake);
         }
 
-        this.updateHud();
+        this.updateHud(delta);
     }
 
-    createSnake (id, spawn, color, isPlayer)
+    createSnake (id, spawn, color, isPlayer, botLevel = DEFAULT_BOT_LEVEL)
     {
         const head = this.add.circle(spawn.x, spawn.y, HEAD_RADIUS, color).setDepth(20);
 
@@ -182,8 +223,8 @@ export class Game extends Scene
         for (let index = 0; index < INITIAL_SCORE - 1; index++)
         {
             const segment = this.add.circle(
-                spawn.x - (initialDirection.x * SEGMENT_SPACING * (index + 1)),
-                spawn.y - (initialDirection.y * SEGMENT_SPACING * (index + 1)),
+                spawn.x - (initialDirection.x * this.segmentSpacing * (index + 1)),
+                spawn.y - (initialDirection.y * this.segmentSpacing * (index + 1)),
                 HEAD_RADIUS - 2,
                 color,
                 0.85
@@ -211,13 +252,14 @@ export class Game extends Scene
             scoreText,
             direction: { ...initialDirection },
             turnCooldown: 0,
+            botLevel,
             history: this.createInitialHistory(spawn, initialDirection)
         };
     }
 
     createInitialHistory (spawn, direction)
     {
-        const historyLength = (INITIAL_SCORE + 20) * SEGMENT_SPACING;
+        const historyLength = (INITIAL_SCORE + 20) * this.segmentSpacing;
         const history = [];
 
         for (let index = 0; index < historyLength; index++)
@@ -297,31 +339,251 @@ export class Game extends Scene
 
         snake.turnCooldown = this.botTurnDelayMs;
 
+        const level = snake.botLevel !== null ? snake.botLevel : DEFAULT_BOT_LEVEL;
+        const visionRange = level >= 10 ? Infinity : (level + 1) * BOT_VISION_UNIT;
+        const attractionWeight = level * 0.2;
+        const dangerWeight = 1.1 + (level * 0.2);
+        const trapWeight = 1 + (level * 0.35);
+        const rejectDangerThreshold = this.getRejectDangerThreshold(level);
+
+        const target = this.findSafeTargetForBot(snake, level, visionRange, rejectDangerThreshold);
 
         const candidates = [...DIRECTIONS]
             .filter((direction) => !((direction.x + snake.direction.x === 0) && (direction.y + snake.direction.y === 0)))
-            .map((direction) => ({
-                direction,
-                risk: this.getDirectionRisk(snake, direction)
-            }))
-            .sort((left, right) => left.risk - right.risk);
+            .map((direction) => {
+                const risk = this.getDirectionRisk(snake, direction);
+                const trapRisk = this.getTrapRisk(snake, direction, level);
+                const combinedDanger = (risk * dangerWeight) + (trapRisk * trapWeight);
+
+                if (risk === Number.MAX_SAFE_INTEGER)
+                {
+                    return {
+                        direction,
+                        score: -Number.MAX_SAFE_INTEGER,
+                        combinedDanger: Number.MAX_SAFE_INTEGER
+                    };
+                }
+
+                let attraction = 0;
+
+                if (target)
+                {
+                    const dx = target.x - snake.head.x;
+                    const dy = target.y - snake.head.y;
+                    const len = Math.sqrt((dx * dx) + (dy * dy)) || 1;
+                    attraction = ((direction.x * (dx / len)) + (direction.y * (dy / len))) * 200 * attractionWeight;
+
+                    // Si la trajectoire est trop dangereuse, ignorer cette cible pour ce tick
+                    if (combinedDanger > rejectDangerThreshold)
+                    {
+                        attraction = 0;
+                    }
+                }
+
+                // Bots de bas niveau : injection d'aleatoire pour paraître moins efficaces
+                const noise = level < 4 ? PhaserMath.Between(-40, 40) * (4 - level) : 0;
+
+                return {
+                    direction,
+                    score: attraction - combinedDanger + noise,
+                    combinedDanger
+                };
+            })
+            .sort((left, right) => right.score - left.score);
 
         if (candidates.length === 0)
         {
             return;
         }
 
-        const bestRisk = candidates[0].risk;
-        const bestCandidates = candidates.filter((candidate) => candidate.risk === bestRisk);
-        const choice = bestCandidates[PhaserMath.Between(0, bestCandidates.length - 1)];
-        snake.direction = choice.direction;
+        const safeCandidates = candidates
+            .filter((candidate) => candidate.combinedDanger !== Number.MAX_SAFE_INTEGER)
+            .sort((left, right) => left.combinedDanger - right.combinedDanger);
+
+        if (safeCandidates.length === 0)
+        {
+            return;
+        }
+
+        const bestCandidate = candidates[0];
+        const safestCandidate = safeCandidates[0];
+
+        // Si la meilleure option vers cible est trop risquée, on passe en mode survie
+        if (target && bestCandidate.combinedDanger > rejectDangerThreshold)
+        {
+            snake.direction = safestCandidate.direction;
+            return;
+        }
+
+        snake.direction = bestCandidate.direction;
     }
 
-    getDirectionRisk (snake, direction)
+    getRejectDangerThreshold (level)
     {
-        const lookAhead = 110;
-        const nextX = snake.head.x + (direction.x * lookAhead);
-        const nextY = snake.head.y + (direction.y * lookAhead);
+        const baseThreshold = this.botDangerThreshold;
+
+        // A partir du niveau 7, le seuil diminue progressivement jusqu'au min au niveau 10.
+        if (level >= 7)
+        {
+            const progress = Math.min(1, (level - 7) / 3);
+            return Math.round(baseThreshold + ((BOT_DANGER_THRESHOLD_MIN - baseThreshold) * progress));
+        }
+
+        return baseThreshold;
+    }
+
+    findSafeTargetForBot (snake, level, visionRange, rejectDangerThreshold)
+    {
+        const candidateTargets = [];
+
+        if (level >= this.botAggressivityActiveLevel)
+        {
+            for (const other of this.snakes)
+            {
+                if (!other.alive || other === snake || other.score >= snake.score)
+                {
+                    continue;
+                }
+
+                const dist = PhaserMath.Distance.Between(snake.head.x, snake.head.y, other.head.x, other.head.y);
+                if (dist <= visionRange)
+                {
+                    candidateTargets.push({
+                        x: other.head.x,
+                        y: other.head.y,
+                        priority: 2,
+                        distance: dist
+                    });
+                }
+            }
+        }
+
+        for (const orange of this.oranges)
+        {
+            const dist = PhaserMath.Distance.Between(snake.head.x, snake.head.y, orange.x, orange.y);
+            if (dist <= visionRange)
+            {
+                candidateTargets.push({
+                    x: orange.x,
+                    y: orange.y,
+                    priority: 1,
+                    distance: dist
+                });
+            }
+        }
+
+        candidateTargets.sort((left, right) => {
+            if (left.priority !== right.priority)
+            {
+                return right.priority - left.priority;
+            }
+
+            return left.distance - right.distance;
+        });
+
+        for (const target of candidateTargets)
+        {
+            const preferredDirections = this.getPreferredDirectionsToTarget(snake, target);
+            let bestApproachDanger = Number.MAX_SAFE_INTEGER;
+
+            for (const direction of preferredDirections)
+            {
+                const risk = this.getDirectionRisk(snake, direction);
+                if (risk === Number.MAX_SAFE_INTEGER)
+                {
+                    continue;
+                }
+
+                const trapRisk = this.getTrapRisk(snake, direction, level);
+                const approachDanger = risk + trapRisk;
+                if (approachDanger < bestApproachDanger)
+                {
+                    bestApproachDanger = approachDanger;
+                }
+            }
+
+            if (bestApproachDanger < rejectDangerThreshold)
+            {
+                return target;
+            }
+        }
+
+        return null;
+    }
+
+    getPreferredDirectionsToTarget (snake, target)
+    {
+        const dx = target.x - snake.head.x;
+        const dy = target.y - snake.head.y;
+        const horizontalFirst = Math.abs(dx) >= Math.abs(dy);
+
+        const preferred = horizontalFirst
+            ? [
+                { x: dx >= 0 ? 1 : -1, y: 0 },
+                { x: 0, y: dy >= 0 ? 1 : -1 }
+            ]
+            : [
+                { x: 0, y: dy >= 0 ? 1 : -1 },
+                { x: dx >= 0 ? 1 : -1, y: 0 }
+            ];
+
+        return preferred.filter((direction) => !((direction.x + snake.direction.x === 0) && (direction.y + snake.direction.y === 0)));
+    }
+
+    getTrapRisk (snake, initialDirection, level)
+    {
+        const steps = Math.min(6, 2 + Math.floor(level / 2));
+        let simulatedX = snake.head.x;
+        let simulatedY = snake.head.y;
+        let currentDirection = initialDirection;
+        let totalRisk = 0;
+
+        for (let step = 0; step < steps; step++)
+        {
+            simulatedX += currentDirection.x * BOT_TRAP_STEP;
+            simulatedY += currentDirection.y * BOT_TRAP_STEP;
+
+            const possibleDirections = DIRECTIONS.filter((direction) => !((direction.x + currentDirection.x === 0) && (direction.y + currentDirection.y === 0)));
+            const assessed = possibleDirections
+                .map((direction) => ({
+                    direction,
+                    risk: this.getDirectionRiskFromPoint(snake, direction, simulatedX, simulatedY)
+                }))
+                .sort((left, right) => left.risk - right.risk);
+
+            const valid = assessed.filter((entry) => entry.risk !== Number.MAX_SAFE_INTEGER);
+
+            if (valid.length === 0)
+            {
+                return Number.MAX_SAFE_INTEGER;
+            }
+
+            if (valid.length === 1)
+            {
+                totalRisk += 240;
+            }
+            else if (valid.length === 2)
+            {
+                totalRisk += 110;
+            }
+
+            const borderDistance = Math.min(simulatedX, WORLD_WIDTH - simulatedX, simulatedY, WORLD_HEIGHT - simulatedY);
+            if (borderDistance < 140)
+            {
+                totalRisk += (140 - borderDistance) * 1.5;
+            }
+
+            totalRisk += valid[0].risk * 0.35;
+            currentDirection = valid[0].direction;
+        }
+
+        return Math.round(totalRisk);
+    }
+
+    getDirectionRiskFromPoint (snake, direction, originX, originY)
+    {
+        const nextX = originX + (direction.x * BOT_LOOK_AHEAD);
+        const nextY = originY + (direction.y * BOT_LOOK_AHEAD);
         const borderPadding = 50;
 
         if (nextX <= borderPadding || nextX >= WORLD_WIDTH - borderPadding || nextY <= borderPadding || nextY >= WORLD_HEIGHT - borderPadding)
@@ -353,9 +615,9 @@ export class Game extends Scene
                     return Number.MAX_SAFE_INTEGER;
                 }
 
-                if (distance < 70)
+                if (distance < 80)
                 {
-                    risk += (70 - distance);
+                    risk += (80 - distance);
                 }
             }
 
@@ -365,14 +627,19 @@ export class Game extends Scene
             }
 
             const headDistance = PhaserMath.Distance.Between(nextX, nextY, other.head.x, other.head.y);
-            if (headDistance < 64)
+            if (headDistance < 72)
             {
                 const dangerWeight = other.score >= snake.score ? 8 : 3;
-                risk += (64 - headDistance) * dangerWeight;
+                risk += (72 - headDistance) * dangerWeight;
             }
         }
 
         return Math.round(risk);
+    }
+
+    getDirectionRisk (snake, direction)
+    {
+        return this.getDirectionRiskFromPoint(snake, direction, snake.head.x, snake.head.y);
     }
     moveSnake (snake, dt)
     {
@@ -390,7 +657,7 @@ export class Game extends Scene
 
         snake.history.unshift({ x: snake.head.x, y: snake.head.y });
 
-        const targetHistoryLength = Math.max(250, (snake.score + 10) * SEGMENT_SPACING);
+        const targetHistoryLength = Math.max(250, (snake.score + 10) * this.segmentSpacing);
         if (snake.history.length > targetHistoryLength)
         {
             snake.history.length = targetHistoryLength;
@@ -419,7 +686,7 @@ export class Game extends Scene
 
         for (let index = 0; index < snake.segments.length; index++)
         {
-            const historyIndex = Math.min(snake.history.length - 1, (index + 1) * SEGMENT_SPACING);
+            const historyIndex = Math.min(snake.history.length - 1, (index + 1) * this.segmentSpacing);
             const historyPoint = snake.history[historyIndex];
             snake.segments[index].setPosition(historyPoint.x, historyPoint.y);
         }
@@ -573,6 +840,25 @@ export class Game extends Scene
                 this.killSnake(snake);
                 return;
             }
+
+            if (index > 0)
+            {
+                const previous = snake.segments[index - 1];
+                const gapDistance = this.distancePointToSegment(
+                    snake.head.x,
+                    snake.head.y,
+                    previous.x,
+                    previous.y,
+                    bodyPart.x,
+                    bodyPart.y
+                );
+
+                if (gapDistance <= HEAD_TO_BODY_DISTANCE - 2)
+                {
+                    this.killSnake(snake);
+                    return;
+                }
+            }
         }
     }
 
@@ -618,6 +904,24 @@ export class Game extends Scene
             {
                 return index;
             }
+
+            if (index > 0)
+            {
+                const previous = defender.segments[index - 1];
+                const gapDistance = this.distancePointToSegment(
+                    attacker.head.x,
+                    attacker.head.y,
+                    previous.x,
+                    previous.y,
+                    bodyPart.x,
+                    bodyPart.y
+                );
+
+                if (gapDistance <= HEAD_TO_BODY_DISTANCE - 2)
+                {
+                    return index;
+                }
+            }
         }
 
         return -1;
@@ -645,7 +949,7 @@ export class Game extends Scene
         }
 
         snake.score = Math.max(1, snake.segments.length + 1);
-        snake.history.length = Math.max(250, (snake.score + 10) * SEGMENT_SPACING);
+        snake.history.length = Math.max(250, (snake.score + 10) * this.segmentSpacing);
     }
 
     showImpactFlash (x, y, isMajor = false)
@@ -745,7 +1049,7 @@ export class Game extends Scene
 
         if (qualifies)
         {
-            const rawName = window.prompt('Nouveau highscore ! Entre ton nom :', 'Player');
+            const rawName = this.playerName;
             const safeName = this.sanitizeName(rawName);
             highscores.push({
                 name: safeName,
@@ -757,14 +1061,14 @@ export class Game extends Scene
             this.writeHighscores(highscores);
         }
 
-        const top = this.readHighscores().slice(0, 3).map((entry, index) => `${index + 1}. ${entry.name} - ${entry.score}`).join('\n');
+        const top = this.readHighscores().slice(0, HIGHSCORE_LIMIT).map((entry, index) => `${index + 1}. ${entry.name} - ${entry.score}`).join('\n');
         const topText = top || 'Aucun score';
         const statusText = qualifies ? 'Nouveau highscore enregistre.' : 'Pas dans le top highscores cette fois.';
 
         this.endPanel.setVisible(true);
         this.endText
             .setVisible(true)
-            .setText(`${title}\nScore: ${finalScore}\n${statusText}\n\nTop:\n${topText}\n\nAppuie sur R pour rejouer`);
+            .setText(`${title}\nScore: ${finalScore}\n${statusText}\n\nTop ${HIGHSCORE_LIMIT}:\n${topText}\n\nAppuie sur R pour retourner au menu`);
     }
 
     sanitizeName (value)
@@ -816,11 +1120,61 @@ export class Game extends Scene
         return score > highscores[highscores.length - 1].score;
     }
 
-    updateHud ()
+    updateHud (delta)
+    {
+        this.hudEmitTimer -= delta;
+
+        if (this.hudEmitTimer > 0)
+        {
+            return;
+        }
+
+        this.hudEmitTimer = HUD_EMIT_INTERVAL_MS;
+        this.emitHudUpdate();
+    }
+
+    emitHudUpdate ()
     {
         const aliveCount = this.snakes.filter((snake) => snake.alive).length;
         const score = this.localPlayer && this.localPlayer.alive ? this.localPlayer.score : 0;
-        this.hudText.setText(`Basilics\nScore: ${score}\nSerpents vivants: ${aliveCount}/${TOTAL_SNAKES}`);
+
+        EventBus.emit('game-hud-update', {
+            playerName: this.playerName,
+            score,
+            aliveCount,
+            totalSnakes: TOTAL_SNAKES,
+            elapsedTimeMs: this.elapsedTimeMs,
+            world: {
+                width: WORLD_WIDTH,
+                height: WORLD_HEIGHT
+            },
+            oranges: this.oranges.map((orange) => ({ x: orange.x, y: orange.y })),
+            snakes: this.snakes.filter((snake) => snake.alive).map((snake) => ({
+                isPlayer: snake.isPlayer,
+                head: { x: snake.head.x, y: snake.head.y },
+                segments: snake.segments.map((segment) => ({ x: segment.x, y: segment.y }))
+            }))
+        });
+    }
+
+    distancePointToSegment (px, py, ax, ay, bx, by)
+    {
+        const abx = bx - ax;
+        const aby = by - ay;
+        const apx = px - ax;
+        const apy = py - ay;
+        const abLenSq = (abx * abx) + (aby * aby);
+
+        if (abLenSq <= 0.0001)
+        {
+            return Math.hypot(px - ax, py - ay);
+        }
+
+        const t = Math.max(0, Math.min(1, ((apx * abx) + (apy * aby)) / abLenSq));
+        const closestX = ax + (abx * t);
+        const closestY = ay + (aby * t);
+
+        return Math.hypot(px - closestX, py - closestY);
     }
 
     drawWorldBounds ()

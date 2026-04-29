@@ -13,36 +13,105 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
+    gap: 18px;
+    padding: 12px;
+    box-sizing: border-box;
 }
 
-.spritePosition {
-    margin: 10px 0 0 10px;
-    font-size: 0.8em;
+.hudPanel {
+    width: 320px;
+    min-height: 768px;
+    background: linear-gradient(180deg, #08182a 0%, #050d17 100%);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    border-radius: 12px;
+    padding: 14px;
+    box-sizing: border-box;
 }
 
-.button {
-    width: 140px;
-    margin: 10px;
+.hudTitle {
+    margin: 0 0 14px;
+    font-size: 22px;
+    color: #ffffff;
+    letter-spacing: 0.3px;
+}
+
+.hudLine {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 7px 0;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    font-size: 15px;
+}
+
+.hudLine strong {
+    color: #ffffff;
+}
+
+.minimapWrap {
+    margin-top: 14px;
     padding: 10px;
-    background-color: #000000;
-    color: rgba(255, 255, 255, 0.87);
-    border: 1px solid rgba(255, 255, 255, 0.87);
-    cursor: pointer;
-    transition: all 0.3s;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+}
 
-    &:hover {
-        border: 1px solid #0ec3c9;
-        color: #0ec3c9;
+.minimapLabel {
+    margin-bottom: 8px;
+    font-weight: 700;
+}
+
+.minimapCanvas {
+    width: 100%;
+    max-width: 240px;
+    height: auto;
+    display: block;
+    border-radius: 6px;
+}
+
+.legend {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+}
+
+.legendGreen {
+    color: #18ff4a;
+}
+
+.legendRed {
+    color: #ff2d2d;
+}
+
+.legendOrange {
+    color: #ff8c00;
+}
+
+@media (max-width: 1400px) {
+    #app {
+        align-items: flex-start;
+        justify-content: flex-start;
+        overflow: auto;
     }
 
-    &:active {
-        background-color: #0ec3c9;
+    .hudPanel {
+        min-height: auto;
+    }
+}
+
+@media (max-width: 1180px) {
+    #app {
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 12px;
     }
 
-    /* Disabled styles */
-    &:disabled {
-        cursor: not-allowed;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        color: rgba(255, 255, 255, 0.3);
+    .hudPanel {
+        width: min(95vw, 760px);
     }
 }

@@ -37,9 +37,9 @@ export class MainMenu extends Scene
             .setStrokeStyle(4, 0xffffff, 0.85)
             .setInteractive({ useHandCursor: true });
 
-        const playLabel = this.add.text(512, 500, 'PLAY', {
+        const playLabel = this.add.text(512, 500, 'JEU LOCAL', {
             fontFamily: 'Arial Black',
-            fontSize: 36,
+            fontSize: 34,
             color: '#ffffff',
             stroke: '#0a5f2a',
             strokeThickness: 6
@@ -82,7 +82,7 @@ export class MainMenu extends Scene
             this.logoTween = null;
         }
 
-        this.scene.start('Game');
+        this.scene.start('LocalSetup');
     }
 
     moveLogo (reactCallback)
