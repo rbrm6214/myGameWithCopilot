@@ -899,6 +899,7 @@ export class LocalSetup extends Scene
     {
         return {
             mode: 'multi-internet',
+            gameMode: 'light',
             role,
             maxPlayers: this.maxPlayers,
             humanPlayers: this.buildHumanPlayers(),

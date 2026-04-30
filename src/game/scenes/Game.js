@@ -1,5 +1,6 @@
 import { EventBus } from '../EventBus';
 import { Input, Math as PhaserMath, Scene } from 'phaser';
+import { GameAudioEngine } from '../audio/GameAudioEngine';
 
 const WORLD_WIDTH = 4000;
 const WORLD_HEIGHT = 4000;
@@ -104,6 +105,7 @@ export class Game extends Scene
         this.lizardBoostMultiplier = DEFAULT_LIZARD_BOOST_MULTIPLIER;
         this.lizardBoostDurationSec = DEFAULT_LIZARD_BOOST_DURATION_SEC;
         this.lizardCooldownSec = DEFAULT_LIZARD_COOLDOWN_SEC;
+        this.audioEngine = null;
     }
 
     init (data)
@@ -157,6 +159,16 @@ export class Game extends Scene
         this.roster = [];
         this.elapsedTimeMs = 0;
         this.hudEmitTimer = 0;
+        this.audioEngine = GameAudioEngine.get();
+        this.audioEngine.ensureStarted();
+        this.audioEngine.startMusic();
+
+        this.events.once('shutdown', () => {
+            this.audioEngine?.stopMusic();
+        });
+        this.events.once('destroy', () => {
+            this.audioEngine?.stopMusic();
+        });
 
         this.cameras.main.setBackgroundColor(0x102030);
         this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
@@ -197,6 +209,13 @@ export class Game extends Scene
         this.wasd = this.input.keyboard.addKeys('W,A,S,D,Z,Q');
         this.ijkl = this.input.keyboard.addKeys('I,J,K,L');
         this.restartKey = this.input.keyboard.addKey('R');
+
+        this.input.once('pointerdown', () => {
+            this.audioEngine?.ensureStarted();
+        });
+        this.input.keyboard.once('keydown', () => {
+            this.audioEngine?.ensureStarted();
+        });
 
         this.endPanel = this.add.rectangle(
             this.scale.width / 2,
@@ -1066,6 +1085,11 @@ export class Game extends Scene
                 snake.score += 1;
                 this.spawnOrange(this.randomInWorld(20), this.randomInWorld(20, false));
                 this.showScorePopup(snake.head.x, snake.head.y - 20, '+1', snake.color);
+
+                if (snake.isLocalHuman)
+                {
+                    this.audioEngine?.playEat();
+                }
             }
         }
     }
@@ -1294,6 +1318,11 @@ export class Game extends Scene
 
         snake.score = Math.max(1, snake.segments.length + 1);
 
+        if (snake.isLocalHuman && removedCount > 0)
+        {
+            this.audioEngine?.playCut();
+        }
+
         if (canTriggerLizard && removedCount > 0)
         {
             snake.pendingLizardRestoreSegments = removedCount;
@@ -1373,6 +1402,11 @@ export class Game extends Scene
             return;
         }
 
+        if (snake.isLocalHuman)
+        {
+            this.audioEngine?.playDeath();
+        }
+
         snake.alive = false;
 
         for (const segment of snake.segments)
@@ -1430,6 +1464,8 @@ export class Game extends Scene
     finishGame (finalScore, title, playerNameOverride = null)
     {
         this.isGameOver = true;
+        this.audioEngine?.stopMusic();
+        this.audioEngine?.playMatchEnd();
         const scoreOwnerName = this.sanitizeName(playerNameOverride || this.playerName);
 
         const highscores = this.readHighscores();
@@ -1458,10 +1494,18 @@ export class Game extends Scene
 
         this.expandGameOverCamera(this.scale.width, this.scale.height);
 
-        this.endPanel.setVisible(true);
+        this.endPanel.setAlpha(0).setVisible(true);
         this.endText
+            .setAlpha(0)
             .setVisible(true)
             .setText(`${title}\nScore retenu: ${finalScore} (${scoreOwnerName})\n${statusText}\n\nScores locaux:\n${localBoard || 'Aucun joueur local'}\n\nTop ${HIGHSCORE_LIMIT}:\n${topText}\n\nAppuie sur R pour retourner au menu`);
+
+        this.tweens.add({
+            targets: [this.endPanel, this.endText],
+            alpha: { from: 0, to: 1 },
+            duration: 260,
+            ease: 'Sine.easeOut'
+        });
     }
 
     sanitizeName (value)

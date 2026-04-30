@@ -132,6 +132,38 @@ export class MultiWaitingRoom extends Scene
             });
         });
 
+        this.add.text(570, 206, 'Mode de jeu', {
+            fontFamily: 'Arial',
+            fontSize: 18,
+            color: '#c4d8e7'
+        });
+
+        this.gameModeButton = this.add.rectangle(870, 218, 110, 34, 0x44647a, 1)
+            .setStrokeStyle(1, 0xffffff, 0.4)
+            .setInteractive({ useHandCursor: true });
+
+        this.gameModeValueText = this.add.text(870, 218, 'Light', {
+            fontFamily: 'Arial Black',
+            fontSize: 16,
+            color: '#ffffff'
+        }).setOrigin(0.5);
+
+        this.gameModeButton.on('pointerdown', () => {
+            if (!this.isHostSession())
+            {
+                return;
+            }
+
+            const currentMode = this.lobbyState?.gameMode === 'full' ? 'full' : 'light';
+            const nextMode = currentMode === 'light' ? 'full' : 'light';
+
+            this.lobbyClient?.updateLobbyOptions({
+                fillWithBots: Boolean(this.lobbyState?.fillWithBots),
+                botDifficulty: this.lobbyState?.botDifficulty || 5,
+                gameMode: nextMode
+            });
+        });
+
         this.botDifficultyRow = this.add.container(570, 230);
         const difficultyLabel = this.add.text(0, 0, 'Difficulte bots', {
             fontFamily: 'Arial',
@@ -257,7 +289,7 @@ export class MultiWaitingRoom extends Scene
         case 'match:started':
             this.handoverToMatch = true;
             this.lobbyClient?.stopPolling();
-            this.scene.start('MultiGame', {
+            this.scene.start(message.payload?.gameMode === 'full' ? 'MultiGameFull' : 'MultiGame', {
                 matchPayload: message.payload,
                 lobbyClient: this.lobbyClient,
                 connectionId: this.connectionId,
@@ -279,8 +311,11 @@ export class MultiWaitingRoom extends Scene
         this.serverIpText.setText(`IP serveur: ${this.lobbyState.serverIp}`);
         this.maxPlayersText.setText(`Max joueurs: ${this.lobbyState.players.length}/${this.lobbyState.maxPlayers}`);
         this.fillBotsValueText.setText(this.lobbyState.fillWithBots ? 'Oui' : 'Non');
+        this.gameModeValueText.setText(this.lobbyState.gameMode === 'full' ? 'Full' : 'Light');
         this.botDifficultyValueText.setText(String(this.lobbyState.botDifficulty));
         this.botDifficultyRow.setVisible(Boolean(this.lobbyState.fillWithBots));
+        this.gameModeButton.setAlpha(this.isHostSession() ? 1 : 0.45);
+        this.gameModeValueText.setAlpha(this.isHostSession() ? 1 : 0.85);
         this.startButton.setAlpha(this.isHostSession() ? 1 : 0.45);
         this.startLabel.setAlpha(this.isHostSession() ? 1 : 0.45);
         this.statusText.setText(this.lobbyState.statusMessage || 'En attente des joueurs...');

@@ -1,6 +1,7 @@
 import { Boot } from './scenes/Boot';
 import { Game } from './scenes/Game';
 import { MultiGame } from './scenes/MultiGame';
+import { MultiGameFull } from './scenes/MultiGameFull';
 import { MultiWaitingRoom } from './scenes/MultiWaitingRoom';
 import { GameOver } from './scenes/GameOver';
 import { MainMenu } from './scenes/MainMenu';
@@ -30,6 +31,7 @@ const config = {
         LocalSetup,
         MultiWaitingRoom,
         MultiGame,
+        MultiGameFull,
         Game,
         GameOver
     ]

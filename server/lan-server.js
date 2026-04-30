@@ -1,8 +1,10 @@
 import http from 'node:http';
 import os from 'node:os';
+import { createGameState, stepGame } from '../src/game/core/GameSimulation.js';
 
 const PORT = 3010;
 const TICK_MS = 120;
+const FULL_TICK_MS = 50;   // ~20 fps for full mode server simulation
 const WORLD_WIDTH = 48;
 const WORLD_HEIGHT = 30;
 const START_LENGTH = 6;
@@ -11,10 +13,21 @@ const MAX_FOOD = 3;
 const connections = new Set();
 const lastInputs = new Map();
 
+// Full-mode simulation state (only active when gameMode === 'full')
+const fullMatch = {
+    active: false,
+    tick: 0,
+    stateNonce: 0,
+    timer: null,
+    simState: null,       // GameState from createGameState()
+    idToConnection: {}    // snakeId -> ownerConnectionId
+};
+
 const lobby = {
     hostConnectionId: null,
     maxPlayers: 4,
     fillWithBots: false,
+    gameMode: 'light',
     botDifficulty: 5,
     players: [],
     chatMessages: [],
@@ -68,7 +81,7 @@ const httpServer = http.createServer(async (request, response) => {
                 lobbyState: buildLobbyState(),
                 matchPayload: lobby.matchPayload,
                 matchNonce: lobby.matchNonce,
-                matchState: buildMatchState(),
+                matchState: lobby.gameMode === 'full' ? buildFullMatchState() : buildMatchState(),
                 connectionView: buildConnectionView(connectionId)
             });
             return;
@@ -144,6 +157,7 @@ function createLobby (connectionId, payload)
     lobby.hostConnectionId = connectionId;
     lobby.maxPlayers = clampInteger(payload.maxPlayers, Math.max(1, payload.humanPlayers?.length || 1), 100, 4);
     lobby.fillWithBots = false;
+    lobby.gameMode = payload.gameMode === 'full' ? 'full' : 'light';
     lobby.botDifficulty = 5;
     lobby.chatMessages = [];
     lobby.players = buildHumanPlayers(payload.humanPlayers || [], connectionId, true);
@@ -180,6 +194,10 @@ function updateOptions (connectionId, payload)
     }
 
     lobby.fillWithBots = Boolean(payload.fillWithBots);
+    if (payload.gameMode === 'light' || payload.gameMode === 'full')
+    {
+        lobby.gameMode = payload.gameMode;
+    }
     lobby.botDifficulty = clampInteger(payload.botDifficulty, 1, 10, 5);
     lobby.statusMessage = 'Options du lobby mises a jour.';
 }
@@ -207,6 +225,7 @@ function startMatch (connectionId)
     const roster = buildRoster();
     lobby.matchPayload = {
         serverIp: lobby.serverIp,
+        gameMode: lobby.gameMode,
         maxPlayers: lobby.maxPlayers,
         fillWithBots: lobby.fillWithBots,
         botDifficulty: lobby.botDifficulty,
@@ -215,8 +234,16 @@ function startMatch (connectionId)
     lobby.matchNonce += 1;
     lobby.statusMessage = 'La partie est lancee.';
 
-    createMatchStateFromRoster(roster);
-    startTickLoop();
+    if (lobby.gameMode === 'full')
+    {
+        createFullMatchState();
+        startFullTickLoop();
+    }
+    else
+    {
+        createMatchStateFromRoster(roster);
+        startTickLoop();
+    }
 }
 
 function buildRoster ()
@@ -294,6 +321,192 @@ function createMatchStateFromRoster (roster)
     {
         spawnFood();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Full mode — GameSimulation engine
+// ---------------------------------------------------------------------------
+
+function buildFullGameSetup ()
+{
+    const maxSnakes = lobby.fillWithBots
+        ? Math.max(lobby.players.length, lobby.maxPlayers)
+        : lobby.players.length;
+
+    const humanPlayers = lobby.players.map((player, index) => ({
+        id: player.id,
+        name: player.name,
+        snakeColorIndex: player.snakeColorIndex != null ? player.snakeColorIndex : index,
+        input: player.input || 'keyboard-arrows',
+        isLocal: false,
+        isPlayerControlled: true,
+        playerSlot: index,
+        power: 'sans'
+    }));
+
+    return {
+        maxSnakes,
+        humanPlayers,
+        botSettings: {
+            extraBotDefaultLevel: lobby.botDifficulty,
+            defaultLevel: lobby.botDifficulty,
+            levelsBySnake: []
+        },
+        gameplay: {}
+    };
+}
+
+function createFullMatchState ()
+{
+    if (fullMatch.timer)
+    {
+        clearInterval(fullMatch.timer);
+        fullMatch.timer = null;
+    }
+
+    fullMatch.active = true;
+    fullMatch.tick = 0;
+    fullMatch.stateNonce = 0;
+    fullMatch.idToConnection = {};
+
+    for (const player of lobby.players)
+    {
+        fullMatch.idToConnection[player.id] = player.ownerConnectionId;
+    }
+
+    fullMatch.simState = createGameState(buildFullGameSetup());
+}
+
+function startFullTickLoop ()
+{
+    if (fullMatch.timer)
+    {
+        clearInterval(fullMatch.timer);
+    }
+
+    let lastTime = Date.now();
+
+    fullMatch.timer = setInterval(() => {
+        const now = Date.now();
+        const dt = (now - lastTime) / 1000;
+        lastTime = now;
+        tickFullMatch(dt, now);
+    }, FULL_TICK_MS);
+}
+
+function tickFullMatch (dt, now)
+{
+    if (!fullMatch.active || !fullMatch.simState)
+    {
+        return;
+    }
+
+    const inputDirections = new Map();
+
+    for (const snake of fullMatch.simState.snakes)
+    {
+        if (!snake.isPlayer || !snake.inputProfile)
+        {
+            continue;
+        }
+
+        const ownerConnectionId = fullMatch.idToConnection[snake.id];
+        if (!ownerConnectionId)
+        {
+            continue;
+        }
+
+        const key = `${ownerConnectionId}:${snake.inputProfile}`;
+        const dir = lastInputs.get(key);
+        if (dir)
+        {
+            inputDirections.set(snake.id, dir);
+        }
+    }
+
+    stepGame(fullMatch.simState, dt, now, inputDirections);
+    syncFullMatchOutcome();
+
+    fullMatch.tick += 1;
+    fullMatch.stateNonce += 1;
+
+    if (fullMatch.simState.isGameOver)
+    {
+        clearInterval(fullMatch.timer);
+        fullMatch.timer = null;
+        fullMatch.active = false;
+        lobby.statusMessage = fullMatch.simState.winnerName
+            ? `Partie terminee. Vainqueur: ${fullMatch.simState.winnerName}`
+            : 'Partie terminee sans vainqueur.';
+    }
+}
+
+function syncFullMatchOutcome ()
+{
+    if (!fullMatch.simState || fullMatch.simState.isGameOver)
+    {
+        return;
+    }
+
+    const aliveSnakes = fullMatch.simState.snakes.filter((snake) => snake.alive);
+    const alivePlayers = fullMatch.simState.snakes.filter((snake) => snake.isPlayer && snake.alive);
+
+    if (aliveSnakes.length <= 1)
+    {
+        const winner = aliveSnakes[0] || null;
+        fullMatch.simState.isGameOver = true;
+        fullMatch.simState.winnerName = winner?.name || null;
+        fullMatch.simState.finalScore = winner?.score || 0;
+        return;
+    }
+
+    if (alivePlayers.length === 0)
+    {
+        const bestHuman = fullMatch.simState.snakes
+            .filter((snake) => snake.isPlayer)
+            .sort((left, right) => right.score - left.score)[0] || null;
+
+        fullMatch.simState.isGameOver = true;
+        fullMatch.simState.winnerName = bestHuman?.name || null;
+        fullMatch.simState.finalScore = bestHuman?.score || 0;
+    }
+}
+
+function buildFullMatchState ()
+{
+    if (!fullMatch.simState)
+    {
+        return null;
+    }
+
+    const sim = fullMatch.simState;
+
+    return {
+        mode: 'full',
+        active: fullMatch.active,
+        tick: fullMatch.tick,
+        stateNonce: fullMatch.stateNonce,
+        winnerName: sim.winnerName,
+        finalScore: sim.finalScore,
+        world: {
+            width: 4000,
+            height: 4000,
+            tickMs: FULL_TICK_MS
+        },
+        oranges: sim.oranges,
+        snakes: sim.snakes.map((snake) => ({
+            id: snake.id,
+            name: snake.name,
+            color: snake.color,
+            alive: snake.alive,
+            score: snake.score,
+            x: snake.x,
+            y: snake.y,
+            segments: snake.segments,
+            isPlayer: snake.isPlayer,
+            power: snake.power
+        }))
+    };
 }
 
 function startTickLoop ()
@@ -513,7 +726,7 @@ function spawnFood ()
 function applyInput (connectionId, inputProfile, direction)
 {
     ensureConnection(connectionId);
-    if (!match.active)
+    if (!match.active && !fullMatch.active)
     {
         return;
     }
@@ -582,6 +795,23 @@ function buildConnectionView (connectionId)
         return { controlledProfiles: [], controlledPlayerIds: [] };
     }
 
+    if (lobby.gameMode === 'full' && fullMatch.simState)
+    {
+        const controlled = fullMatch.simState.snakes.filter((snake) => {
+            if (!snake.isPlayer)
+            {
+                return false;
+            }
+
+            return fullMatch.idToConnection[snake.id] === connectionId;
+        });
+
+        return {
+            controlledProfiles: controlled.map((snake) => snake.inputProfile).filter(Boolean),
+            controlledPlayerIds: controlled.map((snake) => snake.id)
+        };
+    }
+
     const controlled = match.players.filter((player) => player.ownerConnectionId === connectionId && player.kind === 'human');
     return {
         controlledProfiles: controlled.map((player) => player.input).filter(Boolean),
@@ -613,6 +843,20 @@ function disconnect (connectionId)
             player.alive = false;
         }
     }
+
+    if (fullMatch.simState)
+    {
+        for (const snake of fullMatch.simState.snakes)
+        {
+            if (fullMatch.idToConnection[snake.id] === connectionId)
+            {
+                snake.alive = false;
+            }
+        }
+
+        syncFullMatchOutcome();
+    }
+
     lobby.statusMessage = 'Un joueur a quitte le lobby.';
 }
 
@@ -646,6 +890,7 @@ function buildLobbyState ()
         hostConnectionId: lobby.hostConnectionId,
         maxPlayers: lobby.maxPlayers,
         fillWithBots: lobby.fillWithBots,
+        gameMode: lobby.gameMode,
         botDifficulty: lobby.botDifficulty,
         players: lobby.players,
         chatMessages: lobby.chatMessages,
@@ -660,6 +905,7 @@ function resetLobby (statusMessage)
     lobby.hostConnectionId = null;
     lobby.maxPlayers = 4;
     lobby.fillWithBots = false;
+    lobby.gameMode = 'light';
     lobby.botDifficulty = 5;
     lobby.players = [];
     lobby.chatMessages = [];
