@@ -12,7 +12,7 @@ export class MainMenu extends Scene
 
     create ()
     {
-        this.add.image(512, 384, 'background').setAlpha(0.35);
+        this.add.image(512, 384, 'background').setAlpha(1);
 
         this.logo = this.add.text(512, 250, 'BASILICS', {
             fontFamily: 'Arial Black',
@@ -32,23 +32,47 @@ export class MainMenu extends Scene
             align: 'center'
         }).setDepth(100).setOrigin(0.5);
 
-        const playButton = this.add.rectangle(512, 500, 260, 78, 0x1fa44a, 1)
+        this.statusText = this.add.text(512, 736, '', {
+            fontFamily: 'Arial',
+            fontSize: 18,
+            color: '#c4d8e7',
+            align: 'center'
+        }).setDepth(100).setOrigin(0.5);
+
+        this.createMenuButton(300, 560, 340, 78, 0x1fa44a, 'JEU LOCAL', '#0a5f2a', () => {
+            this.changeScene('local');
+        });
+
+        this.createMenuButton(748, 560, 420, 78, 0x1e5aa8, 'JEU MULTI INTERNET', '#103a74', () => {
+            this.changeScene('multi');
+        });
+
+        this.createMenuButton(884, 722, 236, 58, 0x5c5f70, 'OPTIONS', '#2e3344', () => {
+            this.statusText.setText('Options a definir plus tard.');
+        });
+
+        EventBus.emit('current-scene-ready', this);
+    }
+
+    createMenuButton (x, y, width, height, fillColor, labelText, strokeColor, callback)
+    {
+        const button = this.add.rectangle(x, y, width, height, fillColor, 1)
             .setDepth(100)
             .setStrokeStyle(4, 0xffffff, 0.85)
             .setInteractive({ useHandCursor: true });
 
-        const playLabel = this.add.text(512, 500, 'JEU LOCAL', {
+        const label = this.add.text(x, y, labelText, {
             fontFamily: 'Arial Black',
-            fontSize: 34,
+            fontSize: labelText.length > 14 ? 28 : 34,
             color: '#ffffff',
-            stroke: '#0a5f2a',
+            stroke: strokeColor,
             strokeThickness: 6
         }).setOrigin(0.5).setDepth(110);
 
-        playButton.on('pointerover', () => {
-            playButton.setFillStyle(0x26bf57, 1);
+        button.on('pointerover', () => {
+            button.setAlpha(0.92);
             this.tweens.add({
-                targets: [playButton, playLabel],
+                targets: [button, label],
                 scaleX: 1.05,
                 scaleY: 1.05,
                 duration: 80,
@@ -56,10 +80,10 @@ export class MainMenu extends Scene
             });
         });
 
-        playButton.on('pointerout', () => {
-            playButton.setFillStyle(0x1fa44a, 1);
+        button.on('pointerout', () => {
+            button.setAlpha(1);
             this.tweens.add({
-                targets: [playButton, playLabel],
+                targets: [button, label],
                 scaleX: 1,
                 scaleY: 1,
                 duration: 80,
@@ -67,14 +91,10 @@ export class MainMenu extends Scene
             });
         });
 
-        playButton.on('pointerdown', () => {
-            this.changeScene();
-        });
-
-        EventBus.emit('current-scene-ready', this);
+        button.on('pointerdown', callback);
     }
 
-    changeScene ()
+    changeScene (mode = 'local')
     {
         if (this.logoTween)
         {
@@ -82,7 +102,7 @@ export class MainMenu extends Scene
             this.logoTween = null;
         }
 
-        this.scene.start('LocalSetup');
+        this.scene.start('LocalSetup', { mode });
     }
 
     moveLogo (reactCallback)

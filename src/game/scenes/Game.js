@@ -3,7 +3,7 @@ import { Input, Math as PhaserMath, Scene } from 'phaser';
 
 const WORLD_WIDTH = 4000;
 const WORLD_HEIGHT = 4000;
-const TOTAL_SNAKES = 10;
+const DEFAULT_TOTAL_SNAKES = 10;
 const ORANGE_COUNT = 100;
 const INITIAL_SCORE = 3;
 const SNAKE_SPEED = 165;
@@ -26,19 +26,44 @@ const DEFAULT_BOT_DANGER_THRESHOLD = 640;
 const BOT_DANGER_THRESHOLD_MIN = 300;
 const BOT_DANGER_THRESHOLD_MAX = 1100;
 const DEFAULT_BOT_AGGRESSIVITY_ACTIVE_LEVEL = 6;
+const GAMEPAD_AXIS_DEADZONE = 0.35;
+const DEFAULT_LIZARD_BOOST_MULTIPLIER = 2;
+const DEFAULT_LIZARD_BOOST_DURATION_SEC = 3;
+const DEFAULT_LIZARD_COOLDOWN_SEC = 50;
+const DEFAULT_PLAYER_COLORS = [0x2f6bff, 0x7dff7a, 0xff47d7, 0xffe45a];
 
-const SNAKE_COLORS = [
-    0x39ff14,
-    0xff3b30,
-    0x00bfff,
-    0xffd60a,
-    0xbf5af2,
-    0xff6b00,
-    0x2ee6a6,
-    0xff2d55,
-    0x5ac8fa,
-    0xff9f0a
-];
+function generateSnakeColors (count)
+{
+    const colors = [];
+    for (let i = 0; i < count; i++)
+    {
+        const hue = (i * 360 / count) % 360;
+        const s = 0.90;
+        const l = 0.52;
+        const c = (1 - Math.abs(2 * l - 1)) * s;
+        const x = c * (1 - Math.abs((hue / 60) % 2 - 1));
+        const m = l - c / 2;
+        let r = 0, g = 0, b = 0;
+        if (hue < 60) { r = c; g = x; b = 0; }
+        else if (hue < 120) { r = x; g = c; b = 0; }
+        else if (hue < 180) { r = 0; g = c; b = x; }
+        else if (hue < 240) { r = 0; g = x; b = c; }
+        else if (hue < 300) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+        const ri = Math.round((r + m) * 255);
+        const gi = Math.round((g + m) * 255);
+        const bi = Math.round((b + m) * 255);
+        colors.push((ri << 16) | (gi << 8) | bi);
+    }
+    for (let index = 0; index < DEFAULT_PLAYER_COLORS.length && index < colors.length; index++)
+    {
+        colors[index] = DEFAULT_PLAYER_COLORS[index];
+    }
+
+    return colors;
+}
+
+const SNAKE_COLORS = generateSnakeColors(100);
 
 const ORANGE_COLOR = 0xff8c00;
 
@@ -63,6 +88,8 @@ export class Game extends Scene
         this.oranges = [];
         this.isGameOver = false;
         this.localPlayer = null;
+        this.localPlayers = [];
+        this.roster = [];
         this.botTurnDelayMs = 250;
         this.setup = null;
         this.playerName = 'Joueur';
@@ -71,20 +98,53 @@ export class Game extends Scene
         this.segmentSpacing = DEFAULT_SEGMENT_SPACING;
         this.botDangerThreshold = DEFAULT_BOT_DANGER_THRESHOLD;
         this.botAggressivityActiveLevel = DEFAULT_BOT_AGGRESSIVITY_ACTIVE_LEVEL;
+        this.matchConfig = null;
+        this.maxSnakes = DEFAULT_TOTAL_SNAKES;
+        this.extraCameras = [];
+        this.lizardBoostMultiplier = DEFAULT_LIZARD_BOOST_MULTIPLIER;
+        this.lizardBoostDurationSec = DEFAULT_LIZARD_BOOST_DURATION_SEC;
+        this.lizardCooldownSec = DEFAULT_LIZARD_COOLDOWN_SEC;
     }
 
     init (data)
     {
-        this.setup = (data && data.localSetup) ? data.localSetup : null;
-        this.segmentSpacing = Number.isFinite(this.setup?.espacement)
-            ? Math.max(1, Math.floor(this.setup.espacement))
-            : DEFAULT_SEGMENT_SPACING;
-        this.botDangerThreshold = Number.isFinite(this.setup?.seuilDanger)
-            ? PhaserMath.Clamp(Math.floor(this.setup.seuilDanger), BOT_DANGER_THRESHOLD_MIN, BOT_DANGER_THRESHOLD_MAX)
+        this.matchConfig = (data && data.matchConfig) ? data.matchConfig : null;
+        this.setup = this.matchConfig || ((data && data.localSetup) ? data.localSetup : null);
+
+        const gameplay = this.setup?.gameplay || {};
+        const botSettings = this.setup?.botSettings || {};
+
+        this.maxSnakes = Number.isFinite(this.setup?.maxSnakes)
+            ? Math.max(1, Math.floor(this.setup.maxSnakes))
+            : DEFAULT_TOTAL_SNAKES;
+        this.segmentSpacing = Number.isFinite(gameplay.segmentSpacing)
+            ? Math.max(1, Math.floor(gameplay.segmentSpacing))
+            : (Number.isFinite(this.setup?.espacement)
+                ? Math.max(1, Math.floor(this.setup.espacement))
+                : DEFAULT_SEGMENT_SPACING);
+        this.botDangerThreshold = Number.isFinite(botSettings.dangerThreshold)
+            ? PhaserMath.Clamp(Math.floor(botSettings.dangerThreshold), BOT_DANGER_THRESHOLD_MIN, BOT_DANGER_THRESHOLD_MAX)
             : DEFAULT_BOT_DANGER_THRESHOLD;
-        this.botAggressivityActiveLevel = Number.isFinite(this.setup?.['agressivité_active_niveau'])
-            ? PhaserMath.Clamp(Math.floor(this.setup['agressivité_active_niveau']), 1, 11)
-            : DEFAULT_BOT_AGGRESSIVITY_ACTIVE_LEVEL;
+        if (!Number.isFinite(botSettings.dangerThreshold))
+        {
+            this.botDangerThreshold = Number.isFinite(this.setup?.seuilDanger)
+                ? PhaserMath.Clamp(Math.floor(this.setup.seuilDanger), BOT_DANGER_THRESHOLD_MIN, BOT_DANGER_THRESHOLD_MAX)
+                : DEFAULT_BOT_DANGER_THRESHOLD;
+        }
+        this.botAggressivityActiveLevel = Number.isFinite(botSettings.aggressivityActiveLevel)
+            ? PhaserMath.Clamp(Math.floor(botSettings.aggressivityActiveLevel), 1, 11)
+            : (Number.isFinite(this.setup?.['agressivité_active_niveau'])
+                ? PhaserMath.Clamp(Math.floor(this.setup['agressivité_active_niveau']), 1, 11)
+                : DEFAULT_BOT_AGGRESSIVITY_ACTIVE_LEVEL);
+        this.lizardBoostMultiplier = Number.isFinite(gameplay.lizardBoostMultiplier)
+            ? PhaserMath.Clamp(Number(gameplay.lizardBoostMultiplier), 1.2, 4)
+            : DEFAULT_LIZARD_BOOST_MULTIPLIER;
+        this.lizardBoostDurationSec = Number.isFinite(gameplay.lizardBoostDurationSec)
+            ? PhaserMath.Clamp(Math.floor(gameplay.lizardBoostDurationSec), 1, 15)
+            : DEFAULT_LIZARD_BOOST_DURATION_SEC;
+        this.lizardCooldownSec = Number.isFinite(gameplay.lizardCooldownSec)
+            ? PhaserMath.Clamp(Math.floor(gameplay.lizardCooldownSec), 5, 120)
+            : DEFAULT_LIZARD_COOLDOWN_SEC;
     }
 
     create ()
@@ -92,6 +152,9 @@ export class Game extends Scene
         this.isGameOver = false;
         this.snakes = [];
         this.oranges = [];
+        this.localPlayer = null;
+        this.localPlayers = [];
+        this.roster = [];
         this.elapsedTimeMs = 0;
         this.hudEmitTimer = 0;
 
@@ -104,39 +167,36 @@ export class Game extends Scene
         this.drawWorldBounds();
         this.createOranges(ORANGE_COUNT);
 
-        const spawnPoints = this.createUniformSpawnPoints(TOTAL_SNAKES);
+        this.roster = this.buildRoster();
+        this.maxSnakes = this.roster.length;
+        const spawnPoints = this.createUniformSpawnPoints(this.maxSnakes);
 
-        const playerSnakeIndex = this.setup ? this.setup.playerSnakeIndex : 0;
-        this.playerName = (this.setup && this.setup.playerName) ? this.setup.playerName : 'Joueur';
-
-        const botLevelMap = {};
-        if (this.setup)
+        for (let index = 0; index < this.roster.length; index++)
         {
-            for (const entry of this.setup.botLevels)
-            {
-                botLevelMap[entry.snakeIndex] = entry.level;
-            }
-        }
-
-        for (let index = 0; index < TOTAL_SNAKES; index++)
-        {
-            const isPlayer = index === playerSnakeIndex;
-            const color = SNAKE_COLORS[index % SNAKE_COLORS.length];
-            const botLevel = isPlayer ? null : (botLevelMap[index] !== undefined ? botLevelMap[index] : DEFAULT_BOT_LEVEL);
-            const snake = this.createSnake(`snake-${index + 1}`, spawnPoints[index], color, isPlayer, botLevel);
+            const snake = this.createSnake(this.roster[index], spawnPoints[index]);
             this.snakes.push(snake);
 
-            if (isPlayer)
+            if (snake.isLocalHuman)
             {
-                this.localPlayer = snake;
+                this.localPlayers.push(snake);
+
+                if (!this.localPlayer)
+                {
+                    this.localPlayer = snake;
+                }
             }
         }
+
+        this.localPlayers.sort((leftSnake, rightSnake) => leftSnake.playerSlot - rightSnake.playerSlot);
+        this.localPlayer = this.localPlayers[0] || this.localPlayer;
+        this.createSnakeViewerLabels();
+
+        this.playerName = this.localPlayer?.name || 'Joueur';
 
         this.cursors = this.input.keyboard.createCursorKeys();
         this.wasd = this.input.keyboard.addKeys('W,A,S,D,Z,Q');
+        this.ijkl = this.input.keyboard.addKeys('I,J,K,L');
         this.restartKey = this.input.keyboard.addKey('R');
-
-        this.cameras.main.startFollow(this.localPlayer.head, true, 1, 1);
 
         this.endPanel = this.add.rectangle(
             this.scale.width / 2,
@@ -153,6 +213,8 @@ export class Game extends Scene
             color: '#ffffff',
             align: 'center'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(1200).setVisible(false);
+
+        this.configureLocalCameras(this.scale.width, this.scale.height);
 
         this.scale.on('resize', this.handleResize, this);
 
@@ -206,15 +268,106 @@ export class Game extends Scene
             }
 
             this.handleOrangeCollection(snake);
+            this.processPendingLizardRestore(snake);
             this.updateSnakeSegments(snake);
             this.updateSnakeScoreLabel(snake);
         }
 
+        this.refreshCameraTargets();
+
         this.updateHud(delta);
     }
 
-    createSnake (id, spawn, color, isPlayer, botLevel = DEFAULT_BOT_LEVEL)
+    buildRoster ()
     {
+        const roster = [];
+        const humans = Array.isArray(this.setup?.humanPlayers) && this.setup.humanPlayers.length > 0
+            ? this.setup.humanPlayers
+            : [{
+                id: 'player-1',
+                name: this.setup?.playerName || 'Joueur',
+                snakeColorIndex: Number.isFinite(this.setup?.playerSnakeIndex) ? this.setup.playerSnakeIndex : 0,
+                input: 'keyboard-zqsd',
+                isLocal: true
+            }];
+        const botLevelMap = {};
+        const configuredBotLevels = this.setup?.botSettings?.levelsBySnake || this.setup?.botLevels || [];
+
+        for (const entry of configuredBotLevels)
+        {
+            botLevelMap[entry.snakeIndex] = entry.level;
+        }
+
+        const normalizedHumans = humans.map((player, index) => {
+            const snakeIndex = PhaserMath.Clamp(
+                Number.isFinite(player?.playerSlot) ? Math.floor(player.playerSlot) : index,
+                0,
+                this.maxSnakes - 1
+            );
+            const snakeColorIndex = Number.isFinite(player?.snakeColorIndex)
+                ? Math.max(0, Math.floor(player.snakeColorIndex))
+                : index;
+
+            return {
+                id: player?.id || `player-${index + 1}`,
+                name: player?.name || `Joueur ${index + 1}`,
+                input: player?.input || 'keyboard-arrows',
+                power: player?.power || 'sans',
+                isLocal: player?.isLocal !== false,
+                snakeIndex,
+                snakeColorIndex,
+                playerSlot: Number.isFinite(player?.playerSlot) ? Math.max(0, Math.floor(player.playerSlot)) : index
+            };
+        });
+
+        for (const human of normalizedHumans)
+        {
+            roster[human.snakeIndex] = {
+                id: human.id,
+                name: human.name,
+                type: 'human',
+                isPlayer: human.isLocal,
+                isLocalHuman: human.isLocal,
+                inputProfile: human.input,
+                power: human.power,
+                playerSlot: human.playerSlot,
+                colorIndex: human.snakeColorIndex,
+                botLevel: null
+            };
+        }
+
+        const extraBotDefaultLevel = Number.isFinite(this.setup?.botSettings?.extraBotDefaultLevel)
+            ? PhaserMath.Clamp(Math.floor(this.setup.botSettings.extraBotDefaultLevel), 1, 10)
+            : (Number.isFinite(this.setup?.botSettings?.defaultLevel)
+                ? PhaserMath.Clamp(Math.floor(this.setup.botSettings.defaultLevel), 1, 10)
+                : DEFAULT_BOT_LEVEL);
+
+        for (let snakeIndex = 0; snakeIndex < this.maxSnakes; snakeIndex++)
+        {
+            if (roster[snakeIndex])
+            {
+                continue;
+            }
+
+            roster[snakeIndex] = {
+                id: `bot-${snakeIndex + 1}`,
+                name: `Bot ${snakeIndex + 1}`,
+                type: 'bot',
+                isPlayer: false,
+                isLocalHuman: false,
+                inputProfile: null,
+                power: 'sans',
+                playerSlot: Number.MAX_SAFE_INTEGER,
+                colorIndex: snakeIndex,
+                botLevel: botLevelMap[snakeIndex] !== undefined ? botLevelMap[snakeIndex] : extraBotDefaultLevel
+            };
+        }
+
+        return roster;
+    }
+    createSnake (snakeConfig, spawn)
+    {
+        const color = SNAKE_COLORS[snakeConfig.colorIndex % SNAKE_COLORS.length];
         const head = this.add.circle(spawn.x, spawn.y, HEAD_RADIUS, color).setDepth(20);
 
         const initialDirection = DIRECTIONS[spawn.directionIndex % DIRECTIONS.length];
@@ -233,28 +386,60 @@ export class Game extends Scene
             segments.push(segment);
         }
 
-        const scoreText = this.add.text(spawn.x, spawn.y - 26, String(INITIAL_SCORE), {
-            fontFamily: 'Arial Black',
-            fontSize: 18,
-            color: toHexColor(color),
-            stroke: '#111111',
-            strokeThickness: 4
-        }).setOrigin(0.5).setDepth(30);
+        const power = snakeConfig.power || 'sans';
 
-        return {
-            id,
-            isPlayer,
+        const snake = {
+            id: snakeConfig.id,
+            type: snakeConfig.type,
+            name: snakeConfig.name,
+            isPlayer: snakeConfig.isPlayer,
+            isLocalHuman: snakeConfig.isLocalHuman,
+            inputProfile: snakeConfig.inputProfile,
+            playerSlot: Number.isFinite(snakeConfig.playerSlot) ? snakeConfig.playerSlot : Number.MAX_SAFE_INTEGER,
+            power,
             color,
             alive: true,
             score: INITIAL_SCORE,
             head,
             segments,
-            scoreText,
+            viewerLabels: [],
             direction: { ...initialDirection },
             turnCooldown: 0,
-            botLevel,
+            botLevel: snakeConfig.botLevel,
+            lizardBoostUntil: 0,
+            lizardCooldownUntil: 0,
+            pendingLizardRestoreSegments: 0,
+            pendingLizardRestoreAt: 0,
             history: this.createInitialHistory(spawn, initialDirection)
         };
+
+        return snake;
+    }
+
+    createSnakeViewerLabels ()
+    {
+        const viewerCount = Math.max(1, this.localPlayers.length);
+
+        for (const snake of this.snakes)
+        {
+            snake.viewerLabels = [];
+
+            for (let viewerIndex = 0; viewerIndex < viewerCount; viewerIndex++)
+            {
+                const label = this.add.text(snake.head.x, snake.head.y - 40, '', {
+                    fontFamily: 'Arial Black',
+                    fontSize: 13,
+                    color: toHexColor(snake.color),
+                    stroke: '#111111',
+                    strokeThickness: 4,
+                    align: 'center'
+                }).setOrigin(0.5).setDepth(30);
+
+                snake.viewerLabels.push(label);
+            }
+
+            this.updateSnakeScoreLabel(snake);
+        }
     }
 
     createInitialHistory (spawn, direction)
@@ -298,21 +483,89 @@ export class Game extends Scene
     {
         let desired = null;
 
-        if (this.cursors.left.isDown || this.wasd.A.isDown || this.wasd.Q.isDown)
+        if (snake.inputProfile === 'joypad-1')
         {
-            desired = { x: -1, y: 0 };
+            desired = this.getDirectionFromGamepad(0);
         }
-        else if (this.cursors.right.isDown || this.wasd.D.isDown)
+        else if (snake.inputProfile === 'joypad-2')
         {
-            desired = { x: 1, y: 0 };
+            desired = this.getDirectionFromGamepad(1);
         }
-        else if (this.cursors.up.isDown || this.wasd.W.isDown || this.wasd.Z.isDown)
+        else if (snake.inputProfile === 'keyboard-ijkl' || snake.inputProfile === 'keyboard-2')
         {
-            desired = { x: 0, y: -1 };
+            if (this.ijkl.J.isDown)
+            {
+                desired = { x: -1, y: 0 };
+            }
+            else if (this.ijkl.L.isDown)
+            {
+                desired = { x: 1, y: 0 };
+            }
+            else if (this.ijkl.I.isDown)
+            {
+                desired = { x: 0, y: -1 };
+            }
+            else if (this.ijkl.K.isDown)
+            {
+                desired = { x: 0, y: 1 };
+            }
         }
-        else if (this.cursors.down.isDown || this.wasd.S.isDown)
+        else if (snake.inputProfile === 'keyboard-zqsd')
         {
-            desired = { x: 0, y: 1 };
+            if (this.wasd.A.isDown || this.wasd.Q.isDown)
+            {
+                desired = { x: -1, y: 0 };
+            }
+            else if (this.wasd.D.isDown)
+            {
+                desired = { x: 1, y: 0 };
+            }
+            else if (this.wasd.W.isDown || this.wasd.Z.isDown)
+            {
+                desired = { x: 0, y: -1 };
+            }
+            else if (this.wasd.S.isDown)
+            {
+                desired = { x: 0, y: 1 };
+            }
+        }
+        else if (snake.inputProfile === 'keyboard-arrows' || snake.inputProfile === 'keyboard-1')
+        {
+            if (this.cursors.left.isDown)
+            {
+                desired = { x: -1, y: 0 };
+            }
+            else if (this.cursors.right.isDown)
+            {
+                desired = { x: 1, y: 0 };
+            }
+            else if (this.cursors.up.isDown)
+            {
+                desired = { x: 0, y: -1 };
+            }
+            else if (this.cursors.down.isDown)
+            {
+                desired = { x: 0, y: 1 };
+            }
+        }
+        else
+        {
+            if (this.cursors.left.isDown || this.wasd.A.isDown || this.wasd.Q.isDown)
+            {
+                desired = { x: -1, y: 0 };
+            }
+            else if (this.cursors.right.isDown || this.wasd.D.isDown)
+            {
+                desired = { x: 1, y: 0 };
+            }
+            else if (this.cursors.up.isDown || this.wasd.W.isDown || this.wasd.Z.isDown)
+            {
+                desired = { x: 0, y: -1 };
+            }
+            else if (this.cursors.down.isDown || this.wasd.S.isDown)
+            {
+                desired = { x: 0, y: 1 };
+            }
         }
 
         if (!desired)
@@ -326,6 +579,58 @@ export class Game extends Scene
         }
 
         snake.direction = desired;
+    }
+
+    getDirectionFromGamepad (padIndex)
+    {
+        const pad = this.input?.gamepad?.getPad ? this.input.gamepad.getPad(padIndex) : null;
+
+        if (!pad || !pad.connected)
+        {
+            return null;
+        }
+
+        const leftButton = pad.left || pad.buttons?.[14];
+        const rightButton = pad.right || pad.buttons?.[15];
+        const upButton = pad.up || pad.buttons?.[12];
+        const downButton = pad.down || pad.buttons?.[13];
+
+        const isPressed = (button) => !!(button && (button.pressed || button.isDown || button.value > 0.5));
+
+        if (isPressed(leftButton))
+        {
+            return { x: -1, y: 0 };
+        }
+
+        if (isPressed(rightButton))
+        {
+            return { x: 1, y: 0 };
+        }
+
+        if (isPressed(upButton))
+        {
+            return { x: 0, y: -1 };
+        }
+
+        if (isPressed(downButton))
+        {
+            return { x: 0, y: 1 };
+        }
+
+        const axisX = pad.axes?.[0]?.getValue ? pad.axes[0].getValue() : (pad.axes?.[0]?.value ?? pad.axes?.[0] ?? 0);
+        const axisY = pad.axes?.[1]?.getValue ? pad.axes[1].getValue() : (pad.axes?.[1]?.value ?? pad.axes?.[1] ?? 0);
+
+        if (Math.abs(axisX) > Math.abs(axisY) && Math.abs(axisX) >= GAMEPAD_AXIS_DEADZONE)
+        {
+            return axisX < 0 ? { x: -1, y: 0 } : { x: 1, y: 0 };
+        }
+
+        if (Math.abs(axisY) >= GAMEPAD_AXIS_DEADZONE)
+        {
+            return axisY < 0 ? { x: 0, y: -1 } : { x: 0, y: 1 };
+        }
+
+        return null;
     }
 
     updateBotDirection (snake, delta)
@@ -652,8 +957,12 @@ export class Game extends Scene
             return;
         }
 
-        snake.head.x += snake.direction.x * SNAKE_SPEED * dt;
-        snake.head.y += snake.direction.y * SNAKE_SPEED * dt;
+        const speedMultiplier = (snake.power === 'lezard' && this.time.now < snake.lizardBoostUntil)
+            ? this.lizardBoostMultiplier
+            : 1;
+
+        snake.head.x += snake.direction.x * SNAKE_SPEED * speedMultiplier * dt;
+        snake.head.y += snake.direction.y * SNAKE_SPEED * speedMultiplier * dt;
 
         snake.history.unshift({ x: snake.head.x, y: snake.head.y });
 
@@ -694,8 +1003,33 @@ export class Game extends Scene
 
     updateSnakeScoreLabel (snake)
     {
-        snake.scoreText.setText(String(snake.score));
-        snake.scoreText.setPosition(snake.head.x, snake.head.y - 28);
+        snake.viewerLabels.forEach((label, viewerIndex) => {
+            const lines = [snake.name];
+
+            if (this.viewerCanSeeSnakeSize(viewerIndex))
+            {
+                lines.push(`${snake.score}`);
+            }
+
+            if (snake.power === 'lezard')
+            {
+                const remaining = Math.max(0, Math.ceil((snake.lizardCooldownUntil - this.time.now) / 1000));
+                if (remaining > 0)
+                {
+                    lines.push(`Lezard: ${remaining}s`);
+                }
+            }
+
+            label.setVisible(snake.alive);
+            label.setText(lines.join('\n'));
+            label.setPosition(snake.head.x, snake.head.y - 40);
+        });
+    }
+
+    viewerCanSeeSnakeSize (viewerIndex)
+    {
+        const viewerSnake = this.getCameraFollowTarget(viewerIndex);
+        return viewerSnake?.alive === true && viewerSnake.power === 'lunette';
     }
 
     createOranges (count)
@@ -934,6 +1268,15 @@ export class Game extends Scene
             return;
         }
 
+        const canTriggerLizard = snake.power === 'lezard' && this.time.now >= snake.lizardCooldownUntil;
+
+        if (canTriggerLizard)
+        {
+            snake.lizardBoostUntil = this.time.now + (this.lizardBoostDurationSec * 1000);
+            snake.lizardCooldownUntil = this.time.now + (this.lizardCooldownSec * 1000);
+            this.showScorePopup(snake.head.x, snake.head.y - 30, 'LEZARD!', snake.color);
+        }
+
         const firstRemoved = snake.segments[startIndex];
         if (firstRemoved)
         {
@@ -941,6 +1284,7 @@ export class Game extends Scene
         }
 
         const removed = snake.segments.splice(startIndex);
+        const removedCount = removed.length;
 
         for (const segment of removed)
         {
@@ -949,6 +1293,37 @@ export class Game extends Scene
         }
 
         snake.score = Math.max(1, snake.segments.length + 1);
+
+        if (canTriggerLizard && removedCount > 0)
+        {
+            snake.pendingLizardRestoreSegments = removedCount;
+            snake.pendingLizardRestoreAt = this.time.now + (this.lizardBoostDurationSec * 1000);
+        }
+
+        snake.history.length = Math.max(250, (snake.score + 10) * this.segmentSpacing);
+    }
+
+    processPendingLizardRestore (snake)
+    {
+        if (!snake.alive || snake.pendingLizardRestoreSegments <= 0)
+        {
+            return;
+        }
+
+        if (this.time.now < snake.pendingLizardRestoreAt)
+        {
+            return;
+        }
+
+        snake.score += snake.pendingLizardRestoreSegments;
+        this.showScorePopup(
+            snake.head.x,
+            snake.head.y - 36,
+            `QUEUE +${snake.pendingLizardRestoreSegments}`,
+            snake.color
+        );
+        snake.pendingLizardRestoreSegments = 0;
+        snake.pendingLizardRestoreAt = 0;
         snake.history.length = Math.max(250, (snake.score + 10) * this.segmentSpacing);
     }
 
@@ -1018,41 +1393,52 @@ export class Game extends Scene
         }
 
         snake.head.destroy();
-        snake.scoreText.destroy();
+        snake.viewerLabels.forEach((label) => label.destroy());
+        snake.viewerLabels = [];
 
-        if (snake.isPlayer && !this.isGameOver)
+        this.refreshCameraTargets();
+
+        if (snake.isLocalHuman && !this.isGameOver)
         {
-            this.finishGame(snake.score, 'Tu es mort !');
+            const aliveLocalPlayers = this.getAliveLocalPlayers();
+
+            if (aliveLocalPlayers.length === 0)
+            {
+                const bestLocalResult = this.getBestLocalResult();
+                this.finishGame(bestLocalResult.score, 'Tous les joueurs locaux sont elimines !', bestLocalResult.name);
+            }
         }
     }
 
     checkVictoryCondition ()
     {
-        if (this.isGameOver || !this.localPlayer || !this.localPlayer.alive)
+        if (this.isGameOver)
         {
             return;
         }
 
         const aliveSnakes = this.snakes.filter((snake) => snake.alive);
-        if (aliveSnakes.length === 1 && aliveSnakes[0] === this.localPlayer)
+        const aliveLocalPlayers = this.getAliveLocalPlayers();
+
+        if (aliveLocalPlayers.length === 1 && aliveSnakes.length === 1 && aliveSnakes[0] === aliveLocalPlayers[0])
         {
-            this.finishGame(this.localPlayer.score, 'Victoire ! Tu es le dernier basilic en vie.');
+            const winner = aliveLocalPlayers[0];
+            this.finishGame(winner.score, `Victoire ! ${winner.name} est le dernier basilic en vie.`, winner.name);
         }
     }
 
-    finishGame (finalScore, title)
+    finishGame (finalScore, title, playerNameOverride = null)
     {
         this.isGameOver = true;
+        const scoreOwnerName = this.sanitizeName(playerNameOverride || this.playerName);
 
         const highscores = this.readHighscores();
         const qualifies = this.qualifiesForHighscore(finalScore, highscores);
 
         if (qualifies)
         {
-            const rawName = this.playerName;
-            const safeName = this.sanitizeName(rawName);
             highscores.push({
-                name: safeName,
+                name: scoreOwnerName,
                 score: finalScore,
                 date: new Date().toISOString().slice(0, 10)
             });
@@ -1064,11 +1450,18 @@ export class Game extends Scene
         const top = this.readHighscores().slice(0, HIGHSCORE_LIMIT).map((entry, index) => `${index + 1}. ${entry.name} - ${entry.score}`).join('\n');
         const topText = top || 'Aucun score';
         const statusText = qualifies ? 'Nouveau highscore enregistre.' : 'Pas dans le top highscores cette fois.';
+        const localBoard = this.localPlayers
+            .slice()
+            .sort((a, b) => b.score - a.score)
+            .map((snake) => `${snake.name}: ${snake.score}`)
+            .join('\n');
+
+        this.expandGameOverCamera(this.scale.width, this.scale.height);
 
         this.endPanel.setVisible(true);
         this.endText
             .setVisible(true)
-            .setText(`${title}\nScore: ${finalScore}\n${statusText}\n\nTop ${HIGHSCORE_LIMIT}:\n${topText}\n\nAppuie sur R pour retourner au menu`);
+            .setText(`${title}\nScore retenu: ${finalScore} (${scoreOwnerName})\n${statusText}\n\nScores locaux:\n${localBoard || 'Aucun joueur local'}\n\nTop ${HIGHSCORE_LIMIT}:\n${topText}\n\nAppuie sur R pour retourner au menu`);
     }
 
     sanitizeName (value)
@@ -1136,13 +1529,45 @@ export class Game extends Scene
     emitHudUpdate ()
     {
         const aliveCount = this.snakes.filter((snake) => snake.alive).length;
-        const score = this.localPlayer && this.localPlayer.alive ? this.localPlayer.score : 0;
+        const primaryLocalPlayer = this.getPrimaryLocalPlayer();
+        const score = primaryLocalPlayer && primaryLocalPlayer.alive ? primaryLocalPlayer.score : 0;
+        const leftCameraTarget = this.getCameraFollowTarget(0);
+        const rightCameraTarget = this.getCameraFollowTarget(1);
+        const localPlayers = this.localPlayers.map((snake) => ({
+            id: snake.id,
+            name: snake.name,
+            score: snake.score,
+            alive: snake.alive,
+            inputProfile: snake.inputProfile,
+            color: snake.color,
+            power: snake.power
+        }));
+
+        const allCameras = [this.cameras.main, ...this.extraCameras];
+        const cameraFrames = allCameras.map((camera, index) => {
+            const target = this.getCameraFollowTarget(index);
+            return {
+                x: camera.x,
+                y: camera.y,
+                width: camera.width,
+                height: camera.height,
+                color: target?.color || 0xffffff,
+                playerName: target?.name || 'Aucun'
+            };
+        });
 
         EventBus.emit('game-hud-update', {
-            playerName: this.playerName,
+            playerName: primaryLocalPlayer?.name || this.playerName,
             score,
             aliveCount,
-            totalSnakes: TOTAL_SNAKES,
+            totalSnakes: this.maxSnakes,
+            viewMode: this.localPlayers.length > 1 ? 'split' : 'single',
+            cameraTargets: {
+                left: leftCameraTarget ? leftCameraTarget.name : 'Aucun',
+                right: rightCameraTarget ? rightCameraTarget.name : 'Aucun'
+            },
+            cameraFrames,
+            localPlayers,
             elapsedTimeMs: this.elapsedTimeMs,
             world: {
                 width: WORLD_WIDTH,
@@ -1151,10 +1576,54 @@ export class Game extends Scene
             oranges: this.oranges.map((orange) => ({ x: orange.x, y: orange.y })),
             snakes: this.snakes.filter((snake) => snake.alive).map((snake) => ({
                 isPlayer: snake.isPlayer,
+                name: snake.name,
+                color: snake.color,
+                score: snake.score,
                 head: { x: snake.head.x, y: snake.head.y },
                 segments: snake.segments.map((segment) => ({ x: segment.x, y: segment.y }))
             }))
         });
+    }
+
+    getPrimaryLocalPlayer ()
+    {
+        if (this.localPlayers.length > 0)
+        {
+            return this.localPlayers[0];
+        }
+
+        return this.localPlayer;
+    }
+
+    getAliveLocalPlayers ()
+    {
+        return this.localPlayers.filter((snake) => snake.alive);
+    }
+
+    getBestLocalResult ()
+    {
+        if (this.localPlayers.length === 0)
+        {
+            return {
+                name: this.playerName,
+                score: 0
+            };
+        }
+
+        let best = this.localPlayers[0];
+
+        for (const snake of this.localPlayers)
+        {
+            if (snake.score > best.score)
+            {
+                best = snake;
+            }
+        }
+
+        return {
+            name: best.name,
+            score: best.score
+        };
     }
 
     distancePointToSegment (px, py, ax, ay, bx, by)
@@ -1186,7 +1655,14 @@ export class Game extends Scene
 
     handleResize (gameSize)
     {
-        this.cameras.main.setSize(gameSize.width, gameSize.height);
+        if (this.isGameOver)
+        {
+            this.expandGameOverCamera(gameSize.width, gameSize.height);
+        }
+        else
+        {
+            this.configureLocalCameras(gameSize.width, gameSize.height);
+        }
 
         if (this.endPanel)
         {
@@ -1198,6 +1674,141 @@ export class Game extends Scene
         {
             this.endText.setPosition(gameSize.width / 2, gameSize.height / 2);
         }
+    }
+
+    expandGameOverCamera (width = this.scale.width, height = this.scale.height)
+    {
+        for (const camera of this.extraCameras)
+        {
+            this.cameras.remove(camera, false);
+        }
+        this.extraCameras = [];
+
+        this.cameras.main.setViewport(0, 0, width, height);
+        this.cameras.main.setZoom(CAMERA_ZOOM);
+        this.cameras.main.setRoundPixels(true);
+        this.cameras.main.stopFollow();
+    }
+
+    configureLocalCameras (width, height)
+    {
+        for (const camera of this.extraCameras)
+        {
+            this.cameras.remove(camera, false);
+        }
+        this.extraCameras = [];
+
+        const localCount = Math.max(1, this.localPlayers.length);
+        let viewports = [];
+
+        if (localCount === 1)
+        {
+            viewports = [{ x: 0, y: 0, width, height }];
+        }
+        else if (localCount === 2)
+        {
+            const halfWidth = Math.floor(width / 2);
+            viewports = [
+                { x: 0, y: 0, width: halfWidth, height },
+                { x: halfWidth, y: 0, width: width - halfWidth, height }
+            ];
+        }
+        else
+        {
+            const halfWidth = Math.floor(width / 2);
+            const halfHeight = Math.floor(height / 2);
+            viewports = [
+                { x: 0, y: 0, width: halfWidth, height: halfHeight },
+                { x: halfWidth, y: 0, width: width - halfWidth, height: halfHeight },
+                { x: 0, y: halfHeight, width: halfWidth, height: height - halfHeight },
+                { x: halfWidth, y: halfHeight, width: width - halfWidth, height: height - halfHeight }
+            ];
+        }
+
+        const mainViewport = viewports[0];
+        this.cameras.main.setViewport(mainViewport.x, mainViewport.y, mainViewport.width, mainViewport.height);
+        this.cameras.main.setZoom(CAMERA_ZOOM);
+        this.cameras.main.setRoundPixels(true);
+        this.cameras.main.setBackgroundColor(0x102030);
+        this.applyCameraLabelIsolation(this.cameras.main, 0);
+
+        for (let index = 1; index < viewports.length; index++)
+        {
+            const viewport = viewports[index];
+            const camera = this.cameras.add(viewport.x, viewport.y, viewport.width, viewport.height);
+            camera.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+            camera.setRoundPixels(true);
+            camera.setZoom(CAMERA_ZOOM);
+            camera.setBackgroundColor(0x102030);
+            if (this.endPanel && this.endText)
+            {
+                camera.ignore([this.endPanel, this.endText]);
+            }
+            this.applyCameraLabelIsolation(camera, index);
+            this.extraCameras.push(camera);
+        }
+
+        this.refreshCameraTargets();
+    }
+
+    refreshCameraTargets ()
+    {
+        const allCameras = [this.cameras.main, ...this.extraCameras];
+
+        for (let slotIndex = 0; slotIndex < allCameras.length; slotIndex++)
+        {
+            const target = this.getCameraFollowTarget(slotIndex);
+            const camera = allCameras[slotIndex];
+
+            if (target?.head)
+            {
+                camera.startFollow(target.head, true, 1, 1);
+            }
+        }
+    }
+
+    applyCameraLabelIsolation (camera, viewerIndex)
+    {
+        const labelsToIgnore = [];
+
+        for (const snake of this.snakes)
+        {
+            snake.viewerLabels.forEach((label, labelIndex) => {
+                if (labelIndex !== viewerIndex)
+                {
+                    labelsToIgnore.push(label);
+                }
+            });
+        }
+
+        if (labelsToIgnore.length > 0)
+        {
+            camera.ignore(labelsToIgnore);
+        }
+    }
+
+    getCameraFollowTarget (slotIndex)
+    {
+        if (this.localPlayers.length === 0)
+        {
+            return null;
+        }
+
+        const slotPlayer = this.localPlayers[slotIndex];
+        if (slotPlayer && slotPlayer.alive)
+        {
+            return slotPlayer;
+        }
+
+        for (const snake of this.localPlayers)
+        {
+            if (snake.alive)
+            {
+                return snake;
+            }
+        }
+
+        return this.localPlayers[0] || null;
     }
 
     changeScene ()

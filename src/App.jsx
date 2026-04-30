@@ -4,6 +4,12 @@ import { EventBus } from './game/EventBus';
 
 const MINIMAP_CANVAS_SIZE = 240;
 
+function toCssHex (value)
+{
+    const safe = Number.isFinite(value) ? value : 0xffffff;
+    return `#${safe.toString(16).padStart(6, '0')}`;
+}
+
 function formatTimer (elapsedMs)
 {
     const totalSeconds = Math.floor(elapsedMs / 1000);
@@ -22,6 +28,10 @@ function App ()
         score: 0,
         aliveCount: 0,
         totalSnakes: 10,
+        viewMode: 'single',
+        cameraTargets: { left: 'Aucun', right: 'Aucun' },
+        cameraFrames: [],
+        localPlayers: [],
         elapsedTimeMs: 0,
         world: { width: 1, height: 1 },
         oranges: [],
@@ -37,6 +47,10 @@ function App ()
                 ...previous,
                 score: 0,
                 aliveCount: 0,
+                viewMode: 'single',
+                cameraTargets: { left: 'Aucun', right: 'Aucun' },
+                cameraFrames: [],
+                localPlayers: [],
                 elapsedTimeMs: 0,
                 oranges: [],
                 snakes: []
@@ -92,13 +106,13 @@ function App ()
 
         for (const snake of hud.snakes)
         {
-            const color = snake.isPlayer ? '#18ff4a' : '#ff2d2d';
+            const color = snake.isPlayer ? toCssHex(snake.color) : '#ffffff';
 
             if (snake.segments.length > 0)
             {
                 ctx.beginPath();
                 ctx.strokeStyle = color;
-                ctx.lineWidth = snake.isPlayer ? 2.2 : 1.6;
+                ctx.lineWidth = snake.isPlayer ? 2.2 : 1.8;
                 ctx.moveTo(snake.head.x * sx, snake.head.y * sy);
 
                 for (const segment of snake.segments)
@@ -117,6 +131,16 @@ function App ()
     }, [hud]);
 
     const timerText = useMemo(() => formatTimer(hud.elapsedTimeMs || 0), [hud.elapsedTimeMs]);
+    const localPlayersText = useMemo(() => {
+        if (!Array.isArray(hud.localPlayers) || hud.localPlayers.length === 0)
+        {
+            return 'Aucun';
+        }
+
+        return hud.localPlayers
+            .map((player) => `${player.name} [${player.inputProfile}] (${player.score})${player.alive ? '' : ' x'}`)
+            .join(' | ');
+    }, [hud.localPlayers]);
 
     return (
         <div id="app">
@@ -125,6 +149,10 @@ function App ()
                 <div className="hudLine"><span>Scene:</span><strong>{activeSceneKey || 'Chargement'}</strong></div>
                 <div className="hudLine"><span>Joueur:</span><strong>{hud.playerName}</strong></div>
                 <div className="hudLine"><span>Score:</span><strong>{hud.score}</strong></div>
+                <div className="hudLine"><span>Locaux:</span><strong>{localPlayersText}</strong></div>
+                <div className="hudLine"><span>Vue:</span><strong>{hud.viewMode === 'split' ? 'Split-screen' : 'Unique'}</strong></div>
+                <div className="hudLine"><span>Cam gauche:</span><strong>{hud.cameraTargets?.left || 'Aucun'}</strong></div>
+                <div className="hudLine"><span>Cam droite:</span><strong>{hud.cameraTargets?.right || 'Aucun'}</strong></div>
                 <div className="hudLine"><span>Serpents vivants:</span><strong>{hud.aliveCount}/{hud.totalSnakes}</strong></div>
                 <div className="hudLine"><span>Timer:</span><strong>{timerText}</strong></div>
 
@@ -136,16 +164,26 @@ function App ()
                         height={MINIMAP_CANVAS_SIZE}
                         className="minimapCanvas"
                     />
-                    <div className="legend">
-                        <span className="legendGreen">Vert: toi</span>
-                        <span className="legendRed">Rouge: adversaires</span>
-                        <span className="legendOrange">Orange: oranges</span>
-                        <span>Affichage live: position + taille actuelle</span>
-                    </div>
                 </div>
             </aside>
 
-            <PhaserGame ref={phaserRef} currentActiveScene={currentScene} />
+            <div className="gameArea">
+                <PhaserGame ref={phaserRef} currentActiveScene={currentScene} />
+                {Array.isArray(hud.cameraFrames) && hud.cameraFrames.length > 1 && hud.cameraFrames.map((frame, index) => (
+                    <div
+                        key={`frame-${index}`}
+                        className="splitBorder"
+                        title={frame.playerName || 'Aucun'}
+                        style={{
+                            left: `${(frame.x / 1024) * 100}%`,
+                            top: `${(frame.y / 768) * 100}%`,
+                            width: `${(frame.width / 1024) * 100}%`,
+                            height: `${(frame.height / 768) * 100}%`,
+                            borderColor: toCssHex(frame.color)
+                        }}
+                    />
+                ))}
+            </div>
         </div>
     );
 }
